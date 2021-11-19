@@ -1,0 +1,353 @@
+---
+- name: Install and configure OpenVPN server and client configs
+  hosts: all
+  become: yes
+
+
+  tasks:
+
+    - name: '[RHEL] install packages'
+      yum:
+        name: '{{ item }}'
+        state: latest
+        update_cache: yes
+      loop:
+        - sipcalc
+        - python3-pip
+        - libselinux-python3
+        - openssl-devel
+        - lz4-devel
+        - lzo-devel
+        - pam-devel
+        - ca-certificates
+        - openvpn
+      when: ansible_distribution_file_variety == 'RedHat'
+      tags:
+        - install
+   
+    - name: '[Debian] install packages'
+      apt:
+        name: '{{ item }}'
+        state: latest
+        update_cache: yes
+      loop:
+        - sipcalc
+        - python3-pip
+        - python3-selinux
+        - libssl-dev 
+        - liblzo2-dev
+        - libpam0g-dev
+        - ca-certificates
+        - openvpn
+      when: ansible_distribution_file_variety == 'Debian'
+      tags:
+        - install
+
+    - name: 'install dependencies'
+      pip:
+        name: '{{ item }}'
+        state: latest
+      loop:
+        - pip
+        - wheel
+        - cryptography
+        - pyOpenSSL
+      vars:
+        ansible_python_interpreter: /bin/python3
+      tags:
+        - install
+        
+    - name: 'allow forwarding'
+      sysctl:
+        name: net.ipv4.ip_forward
+        value: '1'
+        sysctl_set: yes
+        state: present
+        reload: yes
+
+    - name: 'create dirs'
+      file:
+        path: '{{ item }}'
+        state: directory
+      loop:
+        - /var/log/openvpn
+        - /etc/openvpn/server
+        - /etc/openvpn/client
+        - /etc/openvpn/ccd
+        - /etc/openvpn/configs
+
+    - name: 'create CA key'
+      openssl_privatekey:
+        path: /etc/openvpn/server/ca.key
+        size: 4096
+        type: RSA
+      when: 
+        - inventory_hostname == 'server'
+      vars:
+        ansible_python_interpreter: /bin/python3
+
+    - name: 'create ca.csr'
+      openssl_csr:
+        path: /etc/openvpn/server/ca.csr
+        privatekey_path: /etc/openvpn/server/ca.key
+        country_name: "{{ csr_ca.country_name | default('US') }}"
+        organization_name: "{{ csr_ca.organization_name | default('Home') }}"
+        email_address: "{{ csr_ca.email_address | default('test@test.com') }}"
+        common_name: "{{ csr_ca.common_name | default('OpenVPN-CA') }}"
+      when: 
+        - inventory_hostname == 'server'
+      vars:
+        ansible_python_interpreter: /bin/python3
+
+    - name: 'create ca.crt'
+      community.crypto.x509_certificate:
+        path: /etc/openvpn/server/ca.crt
+        privatekey_path: /etc/openvpn/server/ca.key
+        csr_path: /etc/openvpn/server/ca.csr
+        selfsigned_not_after: +{{ csr_ca.days | default('365') }}d
+        provider: selfsigned
+      when: 
+        - inventory_hostname == 'server'
+      vars:
+        ansible_python_interpreter: /bin/python3
+
+    - name: 'create server key'
+      openssl_privatekey:
+        path: /etc/openvpn/server/server.key
+        size: 4096
+        type: RSA
+      when: 
+        - inventory_hostname == 'server'
+      vars:
+        ansible_python_interpreter: /bin/python3
+
+    - name: 'create server.csr'
+      openssl_csr:
+        path: /etc/openvpn/server/server.csr
+        privatekey_path: /etc/openvpn/server/server.key
+        country_name: "{{ server_crt.country_name | default('US') }}"
+        organization_name: "{{ server_crt.organization_name | default('Home') }}"
+        email_address: "{{ server_crt.email_address | default('test@test.com') }}"
+        common_name: "{{ server_crt.common_name | default('OpenVPN-Server') }}"
+        key_usage:
+          - digitalSignature
+          - keyEncipherment
+        extended_key_usage: serverAuth
+      when: 
+        - inventory_hostname == 'server'
+      vars:
+        ansible_python_interpreter: /bin/python3
+
+    - name: 'create server.crt' 
+      community.crypto.x509_certificate:
+        path: /etc/openvpn/server/server.crt
+        csr_path: /etc/openvpn/server/server.csr
+        ownca_path: /etc/openvpn/server/ca.crt
+        ownca_privatekey_path: /etc/openvpn/server/ca.key
+        provider: ownca
+      when: 
+        - inventory_hostname == 'server'
+      vars:
+        ansible_python_interpreter: /bin/python3
+
+    - name: 'create Diffie-Hellman parameters with the default size (4096 bits)'
+      openssl_dhparam:
+        path: /etc/openvpn/server/dhparams.pem
+      when: 
+        - inventory_hostname == 'server'
+      vars:
+        ansible_python_interpreter: /bin/python3
+      tags:
+        - dh
+
+    - name: 'create tls key'
+      shell:
+        cmd: /usr/sbin/openvpn --genkey --secret /etc/openvpn/server/tls.key
+      when: 
+        - inventory_hostname == 'server'
+
+    - name: 'get all server certs'
+      find:
+        paths: /etc/openvpn/server
+        patterns: '*.crt,*.key,*.csr,*.dh,*.pem'
+      register: server_pattern
+
+    - name: 'get all client certs'
+      find:
+        paths: /etc/openvpn/client
+        patterns: '*.crt,*.key,*.csr,*.dh,*.pem'
+      register: client_pattern
+
+    - name: 'set permissions on certs'
+      file:
+        path: "{{ item.path }}"
+        owner: root
+        group: openvpn
+        mode: '0640'
+      with_items:
+        - '{{ server_pattern.files }}'
+        - '{{ client_pattern.files }}'
+
+    - name: 'copy server.conf'
+      template:
+        src: server.conf.j2
+        dest: /etc/openvpn/server/server.conf
+      when: 
+        - inventory_hostname == 'server'
+
+    - name: 'convert Classful to CIDR'
+      shell:
+        cmd: sipcalc {{ server_ip }} {{ server_mask }} | grep "bits" | cut -f4 -d " "
+      register: cidr
+      when: 
+        - inventory_hostname == 'server'
+
+    - name: 'turn on masquerading'
+      iptables:
+        table: nat
+        chain: POSTROUTING
+        source: "{{ server_ip }}/{{ cidr.stdout }}"
+        jump: MASQUERADE
+      when: 
+        - inventory_hostname == 'server'
+
+    - name: 'allow INPUT and FORWARD'
+      iptables:
+        source: "{{ server_ip }}/{{ cidr.stdout }}"
+        chain: '{{ item }}'
+        jump: ACCEPT
+      loop:
+        - INPUT
+        - FORWARD
+      when: 
+        - inventory_hostname == 'server'
+
+    - name: '[RHEL] make iptables rules persistent'
+      lineinfile:
+        path: /etc/sysconfig/iptables-config
+        regexp: '{{ item.before }}'
+        line: '{{ item.after }}'
+      loop:
+        - { before: 'IPTABLES_SAVE_ON_STOP="no"', after: 'IPTABLES_SAVE_ON_STOP="yes"' }
+        - { before: 'IPTABLES_SAVE_ON_RESTART="no"', after: 'IPTABLES_SAVE_ON_RESTART="yes"' }
+        - { before: 'IPTABLES_SAVE_COUNTER="no"', after: 'IPTABLES_SAVE_COUNTER="yes"' }
+      when: 
+        - ansible_distribution_file_variety == 'RedHat'
+        - inventory_hostname == 'server'
+
+    - name: '[Debian] make iptables rules persistent'
+      shell:
+        cmd: | 
+          /usr/sbin/iptables-save -f /etc/iptables_rules.ipv4 && 
+          /usr/bin/printf '#!/bin/sh\n/sbin/iptables-restore < /etc/iptables_rules.ipv4\n' > /etc/network/if-pre-up.d/iptables && 
+          /usr/bin/chmod +x /etc/network/if-pre-up.d/iptables
+      when: 
+        - ansible_distribution_file_variety == 'Debian'
+        - inventory_hostname == 'server'
+
+    - name: 'create client key'
+      openssl_privatekey:
+        path: /etc/openvpn/client/{{ item.key }}.key
+        size: 4096
+        type: RSA
+      loop: "{{ client_crt | dict2items }}"
+      vars:
+        ansible_python_interpreter: /bin/python3
+      when: inventory_hostname == 'server'
+
+    - name: 'create client.csr'
+      openssl_csr:
+        path: /etc/openvpn/client/{{ item.key }}.csr
+        privatekey_path: /etc/openvpn/client/{{ item.key }}.key
+        country_name: "{{ item.value.country_name | default('US') }}"
+        organization_name: "{{ item.value.organization_name | default('Home') }}"
+        email_address: "{{ item.value.email_address | default('test@test.com') }}"
+        common_name: "{{ item.value.common_name | default('OpenVPN-Client-item.key') }}"
+        key_usage:
+          - digitalSignature
+        extended_key_usage: clientAuth
+      loop: "{{ client_crt | dict2items }}"
+      when: inventory_hostname == 'server'
+      vars:
+        ansible_python_interpreter: /bin/python3
+
+    - name: 'create client.crt' 
+      community.crypto.x509_certificate:
+        path: /etc/openvpn/client/{{ item.key}}.crt
+        csr_path: /etc/openvpn/client/{{ item.key}}.csr
+        ownca_path: /etc/openvpn/server/ca.crt
+        ownca_privatekey_path: /etc/openvpn/server/ca.key
+        provider: ownca
+      loop: "{{ client_crt | dict2items }}"
+      when: inventory_hostname == 'server'
+      vars:
+        ansible_python_interpreter: /bin/python3
+
+    - shell: 
+        cmd: "/usr/bin/cat /etc/openvpn/server/ca.crt"
+      register: ca
+      when: inventory_hostname == 'server'
+
+    - shell: 
+        cmd: "/usr/bin/cat /etc/openvpn/server/tls.key"
+      register: tls
+      when: inventory_hostname == 'server'
+
+    - shell: 
+        cmd: "openssl x509 -in /etc/openvpn/client/{{ item.key }}.crt -text"
+      register: crt
+      loop: "{{ client_crt | dict2items }}"
+      when: inventory_hostname == 'server'
+
+    - shell: 
+        cmd: "/usr/bin/cat /etc/openvpn/client/{{ item.key }}.key"
+      register: key
+      loop: "{{ client_crt | dict2items }}"
+      when: inventory_hostname == 'server'
+  
+    - name: 'generate client configs'
+      template:
+        src: client.conf.j2
+        dest: /etc/openvpn/configs/{{ item.key }}.config
+      loop: "{{ client_crt | dict2items }}"
+      when: inventory_hostname == 'server'
+      notify: start-server
+
+    - name: 'add client route files'
+      lineinfile:
+        create: yes
+        path: /etc/openvpn/ccd/{{ item.key }}
+        line: "iroute {{ item.value.route }}"
+      loop: "{{ client_crt | dict2items }}"
+    
+    - name: 'fetch configs from server'
+      fetch:
+        src: /etc/openvpn/configs/{{ item.key }}.config
+        dest: "{{ all_configs_dir_on_ansible_controle_node | default('/tmp/') }}"
+        flat: yes
+      loop: "{{ client_crt | dict2items }}"
+      when: inventory_hostname == 'server'
+
+    - name: 'copy configs to clients'
+      copy:
+        src: "{{ all_configs_dir_on_ansible_controle_node }}{{ item.key }}.config"
+        dest: /etc/openvpn/client/client.conf
+      loop: "{{ client_crt | dict2items }}"
+      when: inventory_hostname == item.key
+      notify: start-client
+
+  handlers:
+
+    - name: start-server
+      systemd:
+        name: openvpn-server@server.service
+        state: restarted
+        enabled: yes
+ 
+    - name: start-client
+      systemd:
+        name: openvpn-client@client.service
+        state: restarted
+        enabled: yes
+
+

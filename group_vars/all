@@ -1,0 +1,40 @@
+csr_ca:
+  country_name: RU
+  organization_name: Home
+  email_address: test@test.ru
+  common_name: OpenVPN-CA
+  days: 365
+
+server_crt:
+  country_name: RU
+  organization_name: Home
+  email_address: test@test.ru
+  common_name: OpenVPN-Server
+  days: 365
+
+port: 1194
+
+server_ip: 172.20.1.0
+server_mask: 255.255.255.0
+
+dns1: 8.8.8.8
+dns2: 8.8.4.4
+
+
+client_crt:
+  client1:
+    country_name: RU
+    organization_name: Home
+    email_address: test@test.ru
+    common_name: OpenVPN-Client1
+    days: 365
+    route: "192.168.4.0 255.255.255.0"
+  client2:
+    country_name: GB
+    organization_name: SweetHome
+    email_address: test@test.co.uk
+    common_name: OpenVPN-Client2
+    days: 365
+    route: "192.168.5.0 255.255.255.0"
+
+all_configs_dir_on_ansible_controle_node: /tmp/

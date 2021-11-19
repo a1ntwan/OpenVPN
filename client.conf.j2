@@ -1,0 +1,46 @@
+client
+proto {{ proto | default('udp') }}
+dev {{ dev | default('tun') }}
+remote {{ hostvars['server']['ansible_host'] }} {{ port }}
+resolv-retry infinite
+nobind
+persist-key 
+persist-tun
+ca ca.crt
+cert client.crt
+key client.key
+tls-auth tls.key 1
+cipher AES-256-CBC
+log /var/log/openvpn/openvpn-client.log 
+verb 3 
+sndbuf 0
+rcvbuf 0
+remote-cert-tls server
+user nobody
+{% if ansible_distribution_file_variety == 'RedHat' %}
+group nobody
+{% elif ansible_distribution_file_variety == 'Debian' %}
+group nogroup
+{% endif %}
+
+
+<ca>
+{{ ca.stdout }}
+</ca>
+<tls-auth>
+{{ tls.stdout }}
+</tls-auth>
+<cert>
+{% for cert in crt.results %}
+{% if cert.item.key == item.key %}
+{{ cert.stdout }}
+{% endif %}
+{% endfor %}
+</cert>
+<key>
+{% for k in key.results %}
+{% if k.item.key == item.key %}
+{{ k.stdout }}
+{% endif %}
+{% endfor %}
+</key>

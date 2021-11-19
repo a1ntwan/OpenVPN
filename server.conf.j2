@@ -1,0 +1,38 @@
+port {{ port | default('1194') }}
+proto {{ proto | default('udp') }}
+dev {{ dev | default('tun') }}
+ca ca.crt
+cert server.crt
+key server.key
+dh dhparams.pem
+topology subnet
+tls-auth tls.key 0
+server {{ server_ip}} {{ server_mask }}
+ifconfig-pool-persist ipp.txt
+cipher AES-256-CBC
+keepalive 10 120
+persist-key 
+persist-tun
+client-config-dir /etc/openvpn/ccd/
+status /var/log/openvpn/openvpn-status.log 
+log /var/log/openvpn/openvpn.log 
+verb 3 
+sndbuf 0
+rcvbuf 0
+client-to-client
+{% for client, values in client_crt.items() %}
+route {{ values.route }}
+{% endfor %}
+push "redirect-gateway def1 bypass-dhcp"
+push "dhcp-options DNS {{ dns1 | default('8.8.8.8') }}"
+push "dhcp-options DNS {{ dns2 | default('8.8.4.4') }}"
+{% for client, values in client_crt.items() %}
+push "route {{ values.route }}"
+{% endfor %}
+remote-cert-tls client
+user nobody
+{% if ansible_distribution_file_variety == 'RedHat' %}
+group nobody
+{% elif ansible_distribution_file_variety == 'Debian' %}
+group nogroup
+{% endif %}
